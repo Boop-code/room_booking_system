@@ -1,11 +1,16 @@
+import logging
 from typing import Any
 
 from server.database.connection import get_connection
+from server.services.category_service import CategoryService
+from server.services.room_service import RoomService
 from shared.protocol import (
-    ProtocolError,
     create_response,
     create_error_response,
 )
+
+
+logger = logging.getLogger(__name__)
 
 
 def handle_request(request: dict[str, Any]) -> dict[str, Any]:
@@ -13,6 +18,7 @@ def handle_request(request: dict[str, Any]) -> dict[str, Any]:
 
     request_id = request.get("request_id")
     action = request["action"]
+    data = request["data"]
 
     if action == "ping":
         return create_response(
@@ -46,7 +52,63 @@ def handle_request(request: dict[str, Any]) -> dict[str, Any]:
             )
 
         except Exception:
-            raise
+            logger.exception("Ошибка проверки базы данных.")
+            return create_error_response(
+                request_id,
+                "Не удалось проверить подключение к базе данных.",
+                "DATABASE_ERROR",
+            )
+
+    if action == "list_categories":
+        try:
+            categories = CategoryService().get_categories()
+
+            return create_response(
+                request_id,
+                {
+                    "categories": categories,
+                    "count": len(categories),
+                },
+            )
+
+        except Exception:
+            logger.exception("Ошибка получения категорий.")
+            return create_error_response(
+                request_id,
+                "Не удалось получить список категорий.",
+                "DATABASE_ERROR",
+            )
+
+    if action == "list_rooms":
+        try:
+            rooms = RoomService().get_rooms(
+                category_id=data.get("category_id"),
+                min_capacity=data.get("min_capacity"),
+                is_active=data.get("is_active", True),
+            )
+
+            return create_response(
+                request_id,
+                {
+                    "rooms": rooms,
+                    "count": len(rooms),
+                },
+            )
+
+        except ValueError as error:
+            return create_error_response(
+                request_id,
+                str(error),
+                "INVALID_DATA",
+            )
+
+        except Exception:
+            logger.exception("Ошибка получения помещений.")
+            return create_error_response(
+                request_id,
+                "Не удалось получить список помещений.",
+                "DATABASE_ERROR",
+            )
 
     return create_error_response(
         request_id,
