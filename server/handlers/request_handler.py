@@ -148,28 +148,44 @@ def handle_request(request: dict[str, Any]) -> dict[str, Any]:
                 "DATABASE_ERROR",
             )
 
-    if action == "register":
+    if action == "find_available_rooms":
         try:
-            user = _auth_service.register(
-                username=data.get("username"),
-                password=data.get("password"),
-                full_name=data.get("full_name"),
+            start_time = _parse_datetime(
+                data.get("start_time"),
+                "start_time",
             )
+            end_time = _parse_datetime(
+                data.get("end_time"),
+                "end_time",
+            )
+
+            rooms = RoomService().find_available_rooms(
+                start_time=start_time,
+                end_time=end_time,
+                category_id=data.get("category_id"),
+                min_capacity=data.get("min_capacity"),
+            )
+
             return create_response(request_id, {
-                "message": "Регистрация успешно завершена.",
-                "user": user,
+                "rooms": _serialize(rooms),
+                "count": len(rooms),
+                "search_period": {
+                    "start_time": start_time.isoformat(),
+                    "end_time": end_time.isoformat(),
+                },
             })
-        except AuthenticationError as error:
+
+        except ValueError as error:
             return create_error_response(
                 request_id,
                 str(error),
-                "AUTH_ERROR",
+                "INVALID_DATA",
             )
         except Exception:
-            logger.exception("Ошибка регистрации пользователя.")
+            logger.exception("Ошибка поиска свободных помещений.")
             return create_error_response(
                 request_id,
-                "Не удалось зарегистрировать пользователя.",
+                "Не удалось выполнить поиск свободных помещений.",
                 "DATABASE_ERROR",
             )
 
