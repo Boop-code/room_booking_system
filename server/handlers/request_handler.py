@@ -5,9 +5,14 @@ from typing import Any
 
 from server.database.connection import get_connection
 from server.services.auth_service import AuthService, AuthenticationError
+from server.services.audit_service import AuditService
 from server.services.booking_service import BookingService, BookingError
 from server.services.category_service import CategoryService
 from server.services.room_service import RoomService
+from server.services.statistics_service import (
+    StatisticsService,
+    StatisticsError,
+)
 from shared.protocol import (
     create_response,
     create_error_response,
@@ -73,6 +78,30 @@ def _get_authenticated_user(data: dict[str, Any]) -> dict[str, Any] | None:
         return None
 
     return _auth_service.sessions.get_user(token)
+
+
+def _get_admin_access_error(
+    request_id: Any,
+    data: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Возвращает ответ об отказе, если запрос не от администратора."""
+    user = _get_authenticated_user(data)
+
+    if user is None:
+        return create_error_response(
+            request_id,
+            "Для выполнения операции необходимо войти в систему.",
+            "AUTH_ERROR",
+        )
+
+    if user.get("role") != "admin":
+        return create_error_response(
+            request_id,
+            "Недостаточно прав. Операция доступна только администраторам.",
+            "FORBIDDEN",
+        )
+
+    return None
 
 
 def handle_request(request: dict[str, Any]) -> dict[str, Any]:
@@ -189,6 +218,136 @@ def handle_request(request: dict[str, Any]) -> dict[str, Any]:
                 "DATABASE_ERROR",
             )
 
+    if action == "get_statistics":
+        access_error = _get_admin_access_error(request_id, data)
+        if access_error is not None:
+            return access_error
+
+        try:
+            start_time = _parse_datetime(
+                data.get("start_time"),
+                "start_time",
+            )
+            end_time = _parse_datetime(
+                data.get("end_time"),
+                "end_time",
+            )
+
+            statistics = StatisticsService().get_full_statistics(
+                start_time=start_time,
+                end_time=end_time,
+            )
+
+            return create_response(
+                request_id,
+                _serialize(statistics),
+            )
+
+        except (ValueError, StatisticsError) as error:
+            return create_error_response(
+                request_id,
+                str(error),
+                "INVALID_DATA",
+            )
+
+        except Exception:
+            logger.exception("Ошибка получения статистики.")
+            return create_error_response(
+                request_id,
+                "Не удалось получить статистику.",
+                "DATABASE_ERROR",
+            )
+
+    if action == "get_audit_log":
+        access_error = _get_admin_access_error(request_id, data)
+        if access_error is not None:
+            return access_error
+
+        try:
+            start_time_value = data.get("start_time")
+            end_time_value = data.get("end_time")
+
+            start_time = (
+                _parse_datetime(start_time_value, "start_time")
+                if start_time_value is not None
+                else None
+            )
+            end_time = (
+                _parse_datetime(end_time_value, "end_time")
+                if end_time_value is not None
+                else None
+            )
+
+            entries = AuditService().get_entries(
+                limit=data.get("limit", 100),
+                offset=data.get("offset", 0),
+                action=data.get("action"),
+                start_time=start_time,
+                end_time=end_time,
+            )
+
+            return create_response(request_id, {
+                "entries": _serialize(entries),
+                "count": len(entries),
+                "limit": data.get("limit", 100),
+                "offset": data.get("offset", 0),
+            })
+
+        except ValueError as error:
+            return create_error_response(
+                request_id,
+                str(error),
+                "INVALID_DATA",
+            )
+
+        except Exception:
+            logger.exception("Ошибка получения журнала действий.")
+            return create_error_response(
+                request_id,
+                "Не удалось получить журнал действий.",
+                "DATABASE_ERROR",
+            )
+
+    if action == "register":
+        try:
+            result = _auth_service.register(
+                username=data.get("username"),
+                password=data.get("password"),
+                full_name=data.get("full_name"),
+            )
+
+            # Возвращаем только публичные данные пользователя.
+            public_user = {
+                key: result[key]
+                for key in (
+                    "id",
+                    "username",
+                    "full_name",
+                    "role",
+                    "created_at",
+                )
+                if key in result
+            }
+
+            return create_response(request_id, {
+                "message": "Пользователь успешно зарегистрирован.",
+                "user": _serialize(public_user),
+            })
+
+        except AuthenticationError as error:
+            return create_error_response(
+                request_id,
+                str(error),
+                "AUTH_ERROR",
+            )
+        except Exception:
+            logger.exception("Ошибка регистрации пользователя.")
+            return create_error_response(
+                request_id,
+                "Не удалось зарегистрировать пользователя.",
+                "DATABASE_ERROR",
+            )
+
     if action == "login":
         try:
             result = _auth_service.login(
@@ -301,6 +460,12 @@ def handle_request(request: dict[str, Any]) -> dict[str, Any]:
                         False,
                     ),
                 )
+
+                # Обычным пользователям не раскрываем ФИО владельцев
+                # бронирований. Администратор сохраняет полный просмотр.
+                if user.get("role") != "admin":
+                    for booking in bookings:
+                        booking.pop("full_name", None)
 
                 return create_response(request_id, {
                     "bookings": _serialize(bookings),

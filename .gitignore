@@ -29,3 +29,7 @@ Thumbs.db
 
 # Временные файлы
 *.tmp
+
+# Токены авторизации
+admin_token.txt
+user_token.txt
